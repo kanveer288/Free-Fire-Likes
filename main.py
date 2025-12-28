@@ -5,187 +5,141 @@ from pymongo import MongoClient
 from google.protobuf.json_format import MessageToJson
 from app.encryption import enc
 from app.request_handler import make_request, send_multiple_requests
+import secrets
 
-# -------------------------
-# Flask init
-# -------------------------
+# Flask app init
 app = Flask(__name__)
 
-# -------------------------
 # MongoDB init
-# -------------------------
-client = MongoClient(
-    "mongodb+srv://manat:sukh123@xpert.8w1vywl.mongodb.net/?appName=xpert"
-)
-db = client["test"]
+client = MongoClient("mongodb+srv://manat:sukh123@xpert.8w1vywl.mongodb.net/?appName=xpert")  # Replace with actual Mongo URI
+db = client["bot_xpert"]
+collection = db["token_state"]
 
-# success count collection
-state_collection = db["token_state"]
+SECRET_API_KEY = "redefine_kavach_9d3b7f1c2a4e6f8b0c3d5e7a9f1c2b4d"
+ALLOWED_CLIENT_ID = "cli_aimguard_6Z9XK3P4Q7R8S2T1"
+ALLOWED_USER_AGENTS = ["Kavach/1.0.0", "Aimguard/1.0.0"]
+ALLOWED_REQUEST_TYPE = "redefine-like"
 
-# -------------------------
+
 # Region config
-# -------------------------
 REGION_CONFIG = {
     "IND": {
-        "tokens": "region_IND",
+        "tokens": "ind_tokens",
         "url": "https://client.ind.freefiremobile.com/LikeProfile",
         "state": "IND"
     },
     "NX": {
-        "tokens": "nx_tokens",
+        "tokens": "nx_tokens", 
         "url": "https://client.us.freefiremobile.com/LikeProfile",
         "state": "NX"
     },
     "AG": {
         "tokens": "ag_tokens",
-        "url": "https://clientbp.ggblueshark.com/LikeProfile",
+        "url": "https://clientbp.ggblueshark.com/LikeProfile", 
         "state": "AG"
     }
 }
 
-# -------------------------
-# Home
-# -------------------------
 @app.route("/")
 def home():
-    return "API is Alive (jwt_token fixed)", 200
+    return "API is Alive with new!", 200
 
-
-# -------------------------
-# Like API
-# -------------------------
 @app.route("/like", methods=["GET"])
-def like_api():
+def handle_requests():
+    # Extract headers
+    api_key = request.headers.get("X-API-KEY")
+    client_id = request.headers.get("X-CLIENT-ID")
+    user_agent = request.headers.get("User-Agent")
+    request_type = request.headers.get("X-REQUEST-TYPE")
+
+    if (
+        api_key != SECRET_API_KEY or
+        client_id != ALLOWED_CLIENT_ID or
+        user_agent not in ALLOWED_USER_AGENTS or
+        request_type != ALLOWED_REQUEST_TYPE
+    ):
+        return jsonify({"error": "bad request / method not allowed"}), 400
+
     uid = request.args.get("uid")
     region = request.args.get("region", "").upper()
 
     if not uid or region not in REGION_CONFIG:
-        return jsonify({
-            "error": "uid and valid region (IND, NX, AG) required"
-        }), 400
+        return jsonify({"error": "UID required and region must be IND, NX, or AG"}), 400
 
     try:
-        config = REGION_CONFIG[region]
-        tokens_collection = db[config["tokens"]]
+        def process_request():
+            config = REGION_CONFIG[region]
+            tokens_collection = db[config["tokens"]]
 
-        # 🔥 FIX: jwt_token read
-        token_docs = list(
-            tokens_collection.find({}, {"_id": 0, "jwt_token": 1})
-        )
+            tokens_cursor = tokens_collection.find({}, {"_id": 0, "token": 1})
+            tokens = list(tokens_cursor)
 
-        if not token_docs:
-            return jsonify({
-                "error": f"No tokens found in {config['tokens']}"
-            }), 500
+            if not tokens:
+                raise Exception(f"No tokens available in {config['tokens']}.")
 
-        # use first token
-        token = token_docs[0]["jwt_token"]
+            token = tokens[0]["token"]
+            encrypted_uid = enc(uid)
 
-        encrypted_uid = enc(uid)
+            before = make_request(encrypted_uid, region, token)
+            if before is None:
+                raise Exception("Failed to retrieve initial player info.")
 
-        # -------------------------
-        # BEFORE likes
-        # -------------------------
-        before = make_request(encrypted_uid, region, token)
-        if before is None:
-            raise Exception("Failed to fetch player info (before)")
+            data_before = json.loads(MessageToJson(before))
+            before_like = int(data_before.get("AccountInfo", {}).get("Likes", 0))
+            player_region = str(data_before.get("AccountInfo", {}).get("region", ""))
 
-        before_data = json.loads(MessageToJson(before))
-        before_likes = int(
-            before_data.get("AccountInfo", {}).get("Likes", 0)
-        )
-        player_region = str(
-            before_data.get("AccountInfo", {}).get("region", "")
-        )
+            url = config["url"]
+            asyncio.run(send_multiple_requests(uid, region, url, tokens))
 
-        # -------------------------
-        # SEND LIKE REQUESTS
-        # -------------------------
-        asyncio.run(
-            send_multiple_requests(
-                uid,
-                region,
-                config["url"],
-                token_docs
-            )
-        )
+            after = make_request(encrypted_uid, region, token)
+            if after is None:
+                raise Exception("Failed to retrieve player info after like requests.")
 
-        # -------------------------
-        # AFTER likes
-        # -------------------------
-        after = make_request(encrypted_uid, region, token)
-        if after is None:
-            raise Exception("Failed to fetch player info (after)")
+            data_after = json.loads(MessageToJson(after))
+            player_uid = int(data_after.get("AccountInfo", {}).get("UID", 0))
+            after_like = int(data_after.get("AccountInfo", {}).get("Likes", 0))
+            player_name = str(data_after.get("AccountInfo", {}).get("PlayerNickname", ""))
+            like_given = after_like - before_like
+            status = 1 if like_given != 0 else 2
 
-        after_data = json.loads(MessageToJson(after))
+            token_state_region = config["state"]
 
-        player_uid = int(
-            after_data.get("AccountInfo", {}).get("UID", 0)
-        )
-        player_name = str(
-            after_data.get("AccountInfo", {}).get("PlayerNickname", "")
-        )
-        after_likes = int(
-            after_data.get("AccountInfo", {}).get("Likes", 0)
-        )
+            if status == 1:
+                collection.update_one(
+                    {"region": token_state_region},
+                    {"$inc": {"success_count": 1}},
+                    upsert=True
+                )
 
-        added = after_likes - before_likes
-        status = 1 if added > 0 else 2
+            doc = collection.find_one({"region": token_state_region}, {"success_count": 1})
+            success_count = doc.get("success_count", 0) if doc else 0
 
-        # -------------------------
-        # Success counter
-        # -------------------------
-        if status == 1:
-            state_collection.update_one(
-                {"region": config["state"]},
-                {"$inc": {"success_count": 1}},
-                upsert=True
-            )
+            return {
+                "status": status,
+                "message": "Like operation successful" if status == 1 else "No likes added",
+                "player": {
+                    "uid": player_uid,
+                    "region" : player_region,
+                    "nickname": player_name
+                },
+                "likes": {
+                    "before": before_like,
+                    "after": after_like,
+                    "added_by_api": like_given
+                },
+                "success_count": success_count,
+                "token_collection_used": config["tokens"],
+                "token_state_region": token_state_region
+            }
 
-        state_doc = state_collection.find_one(
-            {"region": config["state"]},
-            {"success_count": 1}
-        )
-
-        success_count = state_doc.get("success_count", 0) if state_doc else 0
-
-        # -------------------------
-        # Response
-        # -------------------------
-        response = {
-            "status": status,
-            "message": "Like successful" if status == 1 else "No likes added",
-            "player": {
-                "uid": player_uid,
-                "nickname": player_name,
-                "region": player_region
-            },
-            "likes": {
-                "before": before_likes,
-                "after": after_likes,
-                "added_by_api": added
-            },
-            "success_count": success_count,
-            "token_collection_used": config["tokens"]
-        }
-
-        return Response(
-            json.dumps(response, indent=2),
-            mimetype="application/json"
-        )
-
+        result = process_request()
+        return Response(json.dumps(result, indent=2, sort_keys=False), mimetype="application/json")
     except Exception as e:
-        app.logger.error(f"Error: {e}")
+        app.logger.error(f"Error processing request: {e}")
         return jsonify({"error": str(e)}), 500
 
-
-# -------------------------
-# Run server
-# -------------------------
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=5000,
-        debug=True,
-        use_reloader=False
-    )
+    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+
+
+

@@ -5,14 +5,14 @@ from app.encryption import encrypt_message
 from app.protobuf_handler import create_like_protobuf, decode_protobuf
 
 
-async def send_request(encrypted_uid, jwt_token, url):
+async def send_request(encrypted_uid, token, url):
     try:
         edata = bytes.fromhex(encrypted_uid)
         headers = {
             "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
             "Connection": "Keep-Alive",
             "Accept-Encoding": "gzip",
-            "Authorization": f"Bearer {jwt_token}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/x-www-form-urlencoded",
             "Expect": "100-continue",
             "X-Unity-Version": "2018.4.11f1",
@@ -37,14 +37,14 @@ async def send_multiple_requests(uid, server_name, url, tokens):
 
     tasks = []
     for token_doc in tokens:
-        jwt_token = token_doc["jwt_token"]
-        tasks.append(send_request(encrypted_uid, jwt_token, url))
+        token = token_doc["token"]
+        tasks.append(send_request(encrypted_uid, token, url))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     return results
 
 
-def make_request(encrypt, server_name, jwt_token):
+def make_request(encrypt, server_name, token):
     if server_name == "IND":
         url = "https://client.ind.freefiremobile.com/GetPlayerPersonalShow"
     elif server_name in {"NX", "US"}:
@@ -57,7 +57,7 @@ def make_request(encrypt, server_name, jwt_token):
         "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; ASUS_Z01QD Build/PI)",
         "Connection": "Keep-Alive",
         "Accept-Encoding": "gzip",
-        "Authorization": f"Bearer {jwt_token}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/x-www-form-urlencoded",
         "Expect": "100-continue",
         "X-Unity-Version": "2018.4.11f1",
